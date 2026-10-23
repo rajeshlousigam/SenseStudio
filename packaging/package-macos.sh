@@ -46,14 +46,15 @@ fetch_ffmpeg_tool ffprobe
 
 echo "==> Build $VERSION ($ARCH)"
 if command -v rustup >/dev/null; then rustup target add "$RUST_TARGET" >/dev/null; fi
+# Start from a fresh bundle so files from an earlier deploy or signature never leak in.
+# This must happen before configuring: CMake writes Info.plist into the bundle at configure time.
+rm -rf "${BUILD:?}/SenseStudio.app"
 cmake -S "$ROOT/app" -B "$BUILD" -G Ninja \
   -DCMAKE_BUILD_TYPE=Release \
   -DCMAKE_PREFIX_PATH="$QT_PREFIX" \
   -DCMAKE_OSX_ARCHITECTURES="$ARCH" \
   -DCMAKE_OSX_DEPLOYMENT_TARGET=12.0 \
   -DRUST_TARGET="$RUST_TARGET"
-# Start from a fresh bundle so files from an earlier deploy or signature never leak in.
-rm -rf "$BUILD/SenseStudio.app"
 cmake --build "$BUILD"
 
 APP="$BUILD/SenseStudio.app"
@@ -64,6 +65,13 @@ echo "==> Deploy Qt"
 "$QT_PREFIX/bin/macdeployqt" "$APP" -qmldir="$ROOT/app/qml" -verbose=1
 
 # Every shipped binary must contain the target slice; a wrong-arch sidecar fails only at runtime.
+for key in CFBundleIdentifier CFBundleShortVersionString CFBundleIconFile LSMinimumSystemVersion; do
+  value="$(plutil -extract "$key" raw "$APP/Contents/Info.plist" 2>/dev/null || true)"
+  if [[ -z "$value" ]]; then
+    echo "Info.plist is missing $key" >&2
+    exit 1
+  fi
+done
 for bin in SenseStudio sense-cli ffmpeg ffprobe yt-dlp; do
   if ! lipo -archs "$MACOS_DIR/$bin" | tr ' ' '\n' | grep -qx "$ARCH"; then
     echo "$bin lacks $ARCH (has: $(lipo -archs "$MACOS_DIR/$bin"))" >&2
