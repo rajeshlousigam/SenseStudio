@@ -72,6 +72,10 @@ enum Cmd {
         /// Caps the downloaded resolution.
         #[arg(long, value_enum, default_value_t = PresetArg::P1080)]
         preset: PresetArg,
+        /// Use this browser's signed-in session (chrome, safari, edge, firefox, brave);
+        /// YouTube often requires it ("confirm you're not a bot").
+        #[arg(long)]
+        cookies_from_browser: Option<String>,
         #[arg(long)]
         events: bool,
     },
@@ -255,7 +259,9 @@ fn run(cli: Cli) -> Result<ExitCode, String> {
         }
         Cmd::Render { spec, output, encoder, events } => jobs::render_cmd(&tools, &spec, &output, encoder.into(), events),
         Cmd::Proxy { input, output, events } => jobs::proxy_cmd(&tools, &input, &output, events),
-        Cmd::Download { urls, output_dir, preset, events } => jobs::download_cmd(&tools, &urls, &output_dir, preset.into(), events),
+        Cmd::Download { urls, output_dir, preset, cookies_from_browser, events } => {
+            jobs::download_cmd(&tools, &urls, &output_dir, preset.into(), cookies_from_browser.as_deref(), events)
+        }
         Cmd::Check(common) => process(&tools, &common, None),
         Cmd::Fix { common, output_dir, encoder } => {
             let caps = Capabilities::detect(&tools).map_err(|e| e.to_string())?;

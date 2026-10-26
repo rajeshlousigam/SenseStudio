@@ -85,6 +85,7 @@ qt_add_qml_module(SenseStudio
         qml/icons/pause.svg
         qml/icons/play.svg
         qml/icons/plus.svg
+        qml/icons/retry.svg
         qml/icons/scissors.svg
         qml/icons/skip-back.svg
         qml/icons/skip-forward.svg

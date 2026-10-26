@@ -1,5 +1,6 @@
 pragma ComponentBehavior: Bound
 
+import QtCore
 import QtQuick
 import QtQuick.Controls.Basic
 import QtQuick.Layouts
@@ -17,6 +18,13 @@ Rectangle {
 
     // url, status (Queued|Downloading|Done|Failed|Cancelled), progress, detail, file, selected
     ListModel { id: items }
+
+    // Remembered between launches: YouTube often requires a signed-in browser session.
+    Settings {
+        id: prefs
+        category: "downloads"
+        property string cookiesBrowser: ""
+    }
     property string message: ""
     // Dev/test hook (--merge): merge everything downloaded once the queue drains.
     property bool autoMerge: false
@@ -52,8 +60,9 @@ Rectangle {
         for (let i = 0; i < items.count; ++i) if (items.get(i).status === "Queued") urls.push(items.get(i).url)
         if (urls.length === 0) return
         batch = urls
+        const signIn = prefs.cookiesBrowser !== "" ? ["--cookies-from-browser", prefs.cookiesBrowser] : []
         downloadTask.start(["download", "--events", "--output-dir", Util.joinPath(queue.outputDir, "Downloads"),
-                            "--preset", library.preset, "--"].concat(urls))
+                            "--preset", library.preset].concat(signIn).concat(["--"]).concat(urls))
     }
 
     function rowFor(url) {
@@ -99,7 +108,10 @@ Rectangle {
         }
         // Links added while this batch ran are picked up next.
         onFinished: ok => {
-            if (!ok && downloadTask.message !== "") view.message = downloadTask.message
+            // Per-video failures are shown on their rows; only report a failure that never reached a row.
+            let rowFailed = false
+            for (let i = 0; i < items.count; ++i) if (items.get(i).status === "Failed") rowFailed = true
+            if (!ok && !rowFailed && downloadTask.message !== "") view.message = downloadTask.message.split("\n")[0]
             for (let i = 0; i < items.count; ++i)
                 if (items.get(i).status === "Downloading") items.setProperty(i, "status", "Cancelled")
             view.startNext()
@@ -169,10 +181,43 @@ Rectangle {
 
         RowLayout {
             Layout.fillWidth: true
+            spacing: Theme.s3
+            SComboBox {
+                implicitWidth: 260
+                label: qsTr("Use sign-in from")
+                model: [
+                    { text: qsTr("None"), value: "" },
+                    { text: "Chrome", value: "chrome" },
+                    { text: "Safari", value: "safari" },
+                    { text: "Edge", value: "edge" },
+                    { text: "Firefox", value: "firefox" },
+                    { text: "Brave", value: "brave" },
+                ]
+                Component.onCompleted: currentIndex = Math.max(0, indexOfValue(prefs.cookiesBrowser))
+                onActivated: prefs.cookiesBrowser = currentValue
+            }
+            Text {
+                Layout.fillWidth: true
+                wrapMode: Text.WordWrap
+                color: Theme.textMuted
+                font.pixelSize: Theme.fontSm
+                text: qsTr("Needed when YouTube says “confirm you’re not a bot”: pick a browser where you’re signed in to YouTube. Cookies are read locally and only passed to YouTube. On Windows, Firefox works most reliably.")
+            }
+        }
+
+        RowLayout {
+            Layout.fillWidth: true
             spacing: Theme.s2
             Text { text: qsTr("VIDEOS (%1)").arg(items.count); color: Theme.textSecondary; font.pixelSize: Theme.fontXs; font.weight: Font.Bold; font.letterSpacing: 1.2 }
-            Item { Layout.fillWidth: true }
-            Text { text: view.message; color: Theme.textSecondary; font.pixelSize: Theme.fontSm; elide: Text.ElideRight; Layout.maximumWidth: 520 }
+            Text {
+                Layout.fillWidth: true
+                horizontalAlignment: Text.AlignRight
+                text: view.message
+                color: Theme.textSecondary
+                font.pixelSize: Theme.fontSm
+                elide: Text.ElideRight
+                maximumLineCount: 1
+            }
             SButton {
                 visible: downloadTask.running || mergeTask.running
                 variant: "danger"
@@ -245,6 +290,8 @@ Rectangle {
                             Layout.fillWidth: true
                             visible: row.detail !== ""
                             text: row.detail
+                            wrapMode: Text.WordWrap
+                            maximumLineCount: 2
                             elide: Text.ElideRight
                             color: row.status === "Failed" ? Theme.danger : Theme.textMuted
                             font.pixelSize: Theme.fontSm
@@ -259,6 +306,18 @@ Rectangle {
                         onClicked: { items.move(row.index, row.index - 1, 1); view.revision++ } }
                     IconButton { iconSource: "icons/down.svg"; iconSize: 14; tip: qsTr("Move down"); enabled: row.index < items.count - 1
                         onClicked: { items.move(row.index, row.index + 1, 1); view.revision++ } }
+                    IconButton {
+                        visible: row.status === "Failed" || row.status === "Cancelled"
+                        iconSource: "icons/retry.svg"
+                        iconSize: 14
+                        tip: qsTr("Retry")
+                        onClicked: {
+                            items.setProperty(row.index, "status", "Queued")
+                            items.setProperty(row.index, "detail", "")
+                            view.message = ""
+                            view.startNext()
+                        }
+                    }
                     IconButton { iconSource: "icons/close.svg"; iconSize: 14; tip: qsTr("Remove from list"); enabled: row.status !== "Downloading"
                         onClicked: { items.remove(row.index); view.revision++ } }
                 }

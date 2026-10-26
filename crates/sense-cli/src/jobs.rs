@@ -105,7 +105,14 @@ pub fn proxy_cmd(tools: &Tools, input: &Path, output: &Path, events: bool) -> Re
     Ok(finish(events, result))
 }
 
-pub fn download_cmd(tools: &Tools, urls: &[String], out_dir: &Path, preset: Preset, events: bool) -> Result<ExitCode, String> {
+pub fn download_cmd(
+    tools: &Tools,
+    urls: &[String],
+    out_dir: &Path,
+    preset: Preset,
+    cookies_from_browser: Option<&str>,
+    events: bool,
+) -> Result<ExitCode, String> {
     let yt_dlp = find_on_path("yt-dlp").map_err(|_| "yt-dlp was not found next to the app or on PATH".to_owned())?;
     fs::create_dir_all(out_dir).map_err(|e| format!("cannot create {}: {e}", out_dir.display()))?;
     if events {
@@ -130,6 +137,7 @@ pub fn download_cmd(tools: &Tools, urls: &[String], out_dir: &Path, preset: Pres
             url,
             out_dir,
             max_height,
+            cookies_from_browser,
             cancel: &CANCEL,
         };
         let mut last = -1i64;
