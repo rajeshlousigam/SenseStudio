@@ -24,6 +24,41 @@ Rectangle {
         id: prefs
         category: "downloads"
         property string cookiesBrowser: ""
+        property string cookiesFile: ""
+    }
+
+    readonly property string signInText: prefs.cookiesFile !== "" && Util.exists(prefs.cookiesFile)
+        ? qsTr("cookies file %1").arg(Util.fileName(prefs.cookiesFile))
+        : prefs.cookiesBrowser !== "" ? qsTr("%1 sign-in").arg(prefs.cookiesBrowser.charAt(0).toUpperCase() + prefs.cookiesBrowser.slice(1))
+        : ""
+    property bool signInNeeded: false
+
+    function requeueSignIn() {
+        for (let i = 0; i < items.count; ++i) {
+            if (items.get(i).status === "SignIn") {
+                items.setProperty(i, "status", "Queued")
+                items.setProperty(i, "detail", "")
+            }
+        }
+        message = ""
+        revision++
+        startNext()
+    }
+
+    SignInDialog {
+        id: signInDialog
+        onApplied: (browser, cookiesFile) => {
+            prefs.cookiesBrowser = browser
+            prefs.cookiesFile = cookiesFile
+            view.requeueSignIn()
+        }
+        onCleared: { prefs.cookiesBrowser = ""; prefs.cookiesFile = "" }
+    }
+    function openSignIn(reason) {
+        signInDialog.browser = prefs.cookiesBrowser
+        signInDialog.cookiesFile = prefs.cookiesFile
+        signInDialog.reason = reason
+        signInDialog.open()
     }
     property string message: ""
     // Dev/test hook (--merge): merge everything downloaded once the queue drains.
@@ -60,7 +95,9 @@ Rectangle {
         for (let i = 0; i < items.count; ++i) if (items.get(i).status === "Queued") urls.push(items.get(i).url)
         if (urls.length === 0) return
         batch = urls
-        const signIn = prefs.cookiesBrowser !== "" ? ["--cookies-from-browser", prefs.cookiesBrowser] : []
+        // A cookies file wins over the browser, matching the engine.
+        const signIn = prefs.cookiesFile !== "" && Util.exists(prefs.cookiesFile) ? ["--cookies", prefs.cookiesFile]
+                     : prefs.cookiesBrowser !== "" ? ["--cookies-from-browser", prefs.cookiesBrowser] : []
         downloadTask.start(["download", "--events", "--output-dir", Util.joinPath(queue.outputDir, "Downloads"),
                             "--preset", library.preset].concat(signIn).concat(["--"]).concat(urls))
     }
@@ -99,7 +136,9 @@ Rectangle {
                 items.setProperty(row, "detail", (ev.speed_text || "") + (ev.eta ? "  ·  ETA " + ev.eta : ""))
             } else if (ev.event === "result") {
                 const ok = ev.status === "DOWNLOADED" && ev.files.length > 0
-                items.setProperty(row, "status", ok ? "Done" : ev.status === "CANCELLED" ? "Cancelled" : "Failed")
+                const signIn = ev.status === "SIGN_IN_REQUIRED"
+                if (signIn) view.signInNeeded = true
+                items.setProperty(row, "status", ok ? "Done" : signIn ? "SignIn" : ev.status === "CANCELLED" ? "Cancelled" : "Failed")
                 items.setProperty(row, "progress", ok ? 1 : 0)
                 items.setProperty(row, "detail", ok ? "" : ev.details)
                 if (ok) items.setProperty(row, "file", ev.files[0])
@@ -114,6 +153,11 @@ Rectangle {
             if (!ok && !rowFailed && downloadTask.message !== "") view.message = downloadTask.message.split("\n")[0]
             for (let i = 0; i < items.count; ++i)
                 if (items.get(i).status === "Downloading") items.setProperty(i, "status", "Cancelled")
+            if (view.signInNeeded) {
+                view.signInNeeded = false
+                view.openSignIn(view.signInText === "" ? qsTr("YouTube asked to confirm you're not a bot before downloading.")
+                                                       : qsTr("YouTube refused the current %1.").arg(view.signInText))
+            }
             view.startNext()
             if (view.autoMerge && !downloadTask.running) { view.autoMerge = false; view.mergeSelected() }
         }
@@ -182,26 +226,28 @@ Rectangle {
         RowLayout {
             Layout.fillWidth: true
             spacing: Theme.s3
-            SComboBox {
-                implicitWidth: 260
-                label: qsTr("Use sign-in from")
-                model: [
-                    { text: qsTr("None"), value: "" },
-                    { text: "Chrome", value: "chrome" },
-                    { text: "Safari", value: "safari" },
-                    { text: "Edge", value: "edge" },
-                    { text: "Firefox", value: "firefox" },
-                    { text: "Brave", value: "brave" },
-                ]
-                Component.onCompleted: currentIndex = Math.max(0, indexOfValue(prefs.cookiesBrowser))
-                onActivated: prefs.cookiesBrowser = currentValue
+            Rectangle {
+                implicitWidth: 8
+                implicitHeight: 8
+                radius: 4
+                color: view.signInText !== "" ? Theme.success : Theme.textMuted
+            }
+            Text {
+                text: view.signInText !== "" ? qsTr("YouTube: using %1").arg(view.signInText) : qsTr("YouTube: not signed in")
+                color: Theme.textSecondary
+                font.pixelSize: Theme.fontBase
+            }
+            SButton {
+                implicitHeight: 28
+                text: view.signInText !== "" ? qsTr("Change") : qsTr("Sign in…")
+                onClicked: view.openSignIn("")
             }
             Text {
                 Layout.fillWidth: true
                 wrapMode: Text.WordWrap
                 color: Theme.textMuted
                 font.pixelSize: Theme.fontSm
-                text: qsTr("Needed when YouTube says “confirm you’re not a bot”: pick a browser where you’re signed in to YouTube. Cookies are read locally and only passed to YouTube. On Windows, Firefox works most reliably.")
+                text: qsTr("Only needed if YouTube asks to confirm you're not a bot; SenseStudio will ask when it happens.")
             }
         }
 
@@ -299,15 +345,22 @@ Rectangle {
                     }
                     StatusBadge {
                         status: row.status === "Done" ? MediaLibrary.Converted : row.status === "Failed" ? MediaLibrary.Failed
+                              : row.status === "SignIn" ? MediaLibrary.NeedsAudio
                               : row.status === "Downloading" ? MediaLibrary.Converting : MediaLibrary.Queued
-                        text: row.status === "Downloading" ? Math.round(row.progress * 100) + "%" : row.status
+                        text: row.status === "Downloading" ? Math.round(row.progress * 100) + "%" : row.status === "SignIn" ? qsTr("Sign in") : row.status
                     }
                     IconButton { iconSource: "icons/up.svg"; iconSize: 14; tip: qsTr("Move up"); enabled: row.index > 0
                         onClicked: { items.move(row.index, row.index - 1, 1); view.revision++ } }
                     IconButton { iconSource: "icons/down.svg"; iconSize: 14; tip: qsTr("Move down"); enabled: row.index < items.count - 1
                         onClicked: { items.move(row.index, row.index + 1, 1); view.revision++ } }
+                    SButton {
+                        visible: row.status === "SignIn"
+                        implicitHeight: 26
+                        text: qsTr("Sign in…")
+                        onClicked: view.openSignIn(row.detail)
+                    }
                     IconButton {
-                        visible: row.status === "Failed" || row.status === "Cancelled"
+                        visible: row.status === "Failed" || row.status === "Cancelled" || row.status === "SignIn"
                         iconSource: "icons/retry.svg"
                         iconSize: 14
                         tip: qsTr("Retry")

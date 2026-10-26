@@ -34,6 +34,10 @@ public:
     Q_INVOKABLE QVariant readJson(const QString &path) const;
     Q_INVOKABLE void reveal(const QString &path) const;
     Q_INVOKABLE QString timestamp() const;
+    // Browsers yt-dlp can borrow a sign-in from that exist on this machine: [{ id, label }].
+    Q_INVOKABLE QVariantList installedBrowsers() const;
+    // Opens `url` in that browser; falls back to the default browser. Returns false only if both fail.
+    Q_INVOKABLE bool openInBrowser(const QString &browser, const QUrl &url) const;
 
 private:
     std::unique_ptr<QTemporaryDir> m_temp;

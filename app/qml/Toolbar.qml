@@ -39,9 +39,9 @@ Rectangle {
     }
     Popup {
         id: linkPopup
-        parent: Overlay.overlay
+        // Parented to the toolbar; popups are not clipped, so it opens just below it.
         x: Math.round((parent.width - width) / 2)
-        y: 90
+        y: parent.height + Theme.s6
         width: 640
         modal: true
         padding: Theme.s5
@@ -72,7 +72,7 @@ Rectangle {
                         color: Theme.textPrimary
                         font.family: Theme.monoFamily
                         font.pixelSize: Theme.fontBase
-                        placeholderText: "https://videos.stepoutplay.com/videos/match.mp4"
+                        placeholderText: "https://cdn.example.com/videos/match.mp4"
                         placeholderTextColor: Theme.textMuted
                         background: null
                     }

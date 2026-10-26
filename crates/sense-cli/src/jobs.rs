@@ -18,10 +18,10 @@ use sense_core::Error;
 use crate::{emit, watch_stdin_for_cancel, CANCEL};
 
 fn status_for(err: &Error) -> &'static str {
-    if matches!(err, Error::Cancelled) {
-        "CANCELLED"
-    } else {
-        "ERROR"
+    match err {
+        Error::Cancelled => "CANCELLED",
+        Error::SignInRequired(_) => "SIGN_IN_REQUIRED",
+        _ => "ERROR",
     }
 }
 
@@ -111,6 +111,7 @@ pub fn download_cmd(
     out_dir: &Path,
     preset: Preset,
     cookies_from_browser: Option<&str>,
+    cookies_file: Option<&Path>,
     events: bool,
 ) -> Result<ExitCode, String> {
     let yt_dlp = find_on_path("yt-dlp").map_err(|_| "yt-dlp was not found next to the app or on PATH".to_owned())?;
@@ -138,6 +139,7 @@ pub fn download_cmd(
             out_dir,
             max_height,
             cookies_from_browser,
+            cookies_file,
             cancel: &CANCEL,
         };
         let mut last = -1i64;

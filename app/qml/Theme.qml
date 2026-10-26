@@ -1,7 +1,7 @@
 pragma Singleton
 import QtQuick
 
-// StepOut TMS design tokens (stepouttms/src/theme + SODesignSystem.md), dark-first.
+// StepOut design tokens, dark-first.
 QtObject {
     readonly property color canvas: "#131320"
     readonly property color sidebar: "#0E0E1A"

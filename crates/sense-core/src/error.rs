@@ -12,6 +12,9 @@ pub enum Error {
     NoEncoder,
     #[error("cancelled")]
     Cancelled,
+    /// The site needs a signed-in session (YouTube bot check, age gate, private video).
+    #[error("{0}")]
+    SignInRequired(String),
     #[error("verification failed: {0}")]
     Verify(String),
     #[error(transparent)]

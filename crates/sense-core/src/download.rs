@@ -31,6 +31,8 @@ pub struct DownloadRequest<'a> {
     /// Browser whose signed-in session yt-dlp borrows (chrome, safari, edge, firefox, brave).
     /// YouTube increasingly refuses anonymous downloads with "confirm you're not a bot".
     pub cookies_from_browser: Option<&'a str>,
+    /// Netscape-format cookies.txt exported from a browser; takes precedence over the browser.
+    pub cookies_file: Option<&'a Path>,
     pub cancel: &'a AtomicBool,
 }
 
@@ -54,7 +56,13 @@ pub fn download(req: &DownloadRequest<'_>, on_event: &mut dyn FnMut(DownloadEven
     push(&["--print", "after_move:SENSEFILE %(filepath)s"]);
     args.push("-P".into());
     args.push(req.out_dir.as_os_str().to_owned());
-    if let Some(browser) = req.cookies_from_browser {
+    if let Some(file) = req.cookies_file {
+        if !file.is_file() {
+            return Err(Error::Parse { what: "cookies file", message: format!("not found: {}", file.display()) });
+        }
+        args.push("--cookies".into());
+        args.push(file.as_os_str().to_owned());
+    } else if let Some(browser) = req.cookies_from_browser {
         if !BROWSERS.contains(&browser) {
             return Err(Error::Parse { what: "browser", message: format!("unsupported browser: {browser}") });
         }
@@ -79,7 +87,7 @@ pub fn download(req: &DownloadRequest<'_>, on_event: &mut dyn FnMut(DownloadEven
         }
     })
     .map_err(|e| match e {
-        Error::Tool { tool, message } => Error::Tool { tool, message: friendly_error(&message, req.cookies_from_browser) },
+        Error::Tool { tool, message } => classify_error(tool, &message, signed_in_with(req)),
         other => other,
     })?;
     if files.is_empty() {
@@ -88,30 +96,50 @@ pub fn download(req: &DownloadRequest<'_>, on_event: &mut dyn FnMut(DownloadEven
     Ok(files)
 }
 
-/// yt-dlp prints warnings, errors and long FAQ links; keep the ERROR lines and explain the
-/// failures people actually hit.
-fn friendly_error(message: &str, browser: Option<&str>) -> String {
+/// How the request was signed in, for error messages.
+fn signed_in_with(req: &DownloadRequest<'_>) -> Option<String> {
+    req.cookies_file
+        .map(|_| "cookies file".to_owned())
+        .or_else(|| req.cookies_from_browser.map(|b| format!("{b} session")))
+}
+
+/// Sign-in problems become `SignInRequired` so the app can offer to sign in;
+/// everything else stays a tool error with a readable message.
+fn classify_error(tool: &'static str, message: &str, signed_in: Option<String>) -> Error {
+    let text = error_lines(message);
+    let needs_sign_in = (text.contains("confirm you") && text.contains("not a bot"))
+        || text.contains("confirm your age")
+        || text.contains("Sign in if you've been granted access")
+        || text.contains("members-only");
+    if needs_sign_in {
+        return Error::SignInRequired(match signed_in {
+            None => "YouTube needs you to be signed in to download this video.".into(),
+            Some(how) => format!(
+                "YouTube still refused with your {how}. Make sure you're signed in to YouTube (and the account can \
+                 watch this video), then retry."
+            ),
+        });
+    }
+    Error::Tool { tool, message: friendly_error(&text, signed_in.is_some()) }
+}
+
+/// yt-dlp prints warnings, errors and long FAQ links; keep only the ERROR lines.
+fn error_lines(message: &str) -> String {
     let errors: Vec<&str> = message
         .lines()
         .filter_map(|l| l.trim().strip_prefix("ERROR:"))
         .map(str::trim)
         .collect();
-    let text = if errors.is_empty() { message.trim().to_owned() } else { errors.join(" ") };
-    if text.contains("confirm you") && text.contains("not a bot") {
-        return match browser {
-            None => "YouTube wants a signed-in session (\"confirm you're not a bot\"). Choose the browser you're \
-                     logged into YouTube with under \"Use sign-in from\", then Retry."
-                .into(),
-            Some(b) => format!(
-                "YouTube still refused with your {b} session. Open youtube.com in {b}, make sure you are signed in, \
-                 then Retry. If it keeps failing, try another browser."
-            ),
-        };
-    }
+    if errors.is_empty() { message.trim().to_owned() } else { errors.join(" ") }
+}
+
+/// Explains the non-sign-in failures people actually hit.
+fn friendly_error(text: &str, signed_in: bool) -> String {
+    let browser = signed_in.then_some("the browser");
     if text.contains("live event has ended") || text.contains("No video formats found") || text.contains("Requested format is not available") {
         return "YouTube has no downloadable video for this link yet. If it was a live stream, the replay may still be \
                 processing or the channel didn't save it; try again later. If it plays on youtube.com but still fails \
-                here, choose your browser under \"Use sign-in from\" and Retry."
+                here, sign in to YouTube and retry."
             .into();
     }
     if text.contains("live event will begin") || text.contains("Premieres in") {
@@ -120,13 +148,13 @@ fn friendly_error(message: &str, browser: Option<&str>) -> String {
     if text.contains("does not pass filter") && text.contains("is_live") {
         return "This stream is live right now. Download it after it ends and the replay is available.".into();
     }
-    if text.contains("Operation not permitted") && browser == Some("safari") {
+    if text.contains("Operation not permitted") && text.contains("Safari") {
         return "macOS blocked access to Safari's cookies. Allow SenseStudio in System Settings → Privacy & Security → \
                 Full Disk Access, or choose Chrome or Firefox."
             .into();
     }
     if text.contains("could not find") && text.contains("cookies database") {
-        return format!("No {} profile with cookies was found on this computer. Choose another browser.", browser.unwrap_or("browser"));
+        return "No browser profile with cookies was found on this computer. Sign in with another browser.".into();
     }
     if text.contains("Failed to decrypt") || text.contains("Could not copy") && text.contains("cookie database") {
         return format!(
@@ -135,7 +163,7 @@ fn friendly_error(message: &str, browser: Option<&str>) -> String {
             browser.unwrap_or("the browser")
         );
     }
-    text
+    text.to_owned()
 }
 
 fn parse_progress(rest: &str) -> DownloadEvent {
@@ -156,12 +184,20 @@ mod tests {
     use super::*;
 
     #[test]
-    fn explains_bot_checks_and_keeps_only_error_lines() {
+    fn bot_checks_become_sign_in_required() {
         let raw = "WARNING: [youtube] No title found\nERROR: [youtube] abc: Sign in to confirm you’re not a bot. Use --cookies-from-browser";
-        assert!(friendly_error(raw, None).contains("Use sign-in from"));
-        assert!(friendly_error(raw, Some("chrome")).contains("chrome session"));
-        assert_eq!(friendly_error("WARNING: x\nERROR: [generic] HTTP Error 404", None), "[generic] HTTP Error 404");
-        assert!(friendly_error("ERROR: [youtube] abc: This live event has ended.", None).contains("replay may still be processing"));
+        assert!(matches!(classify_error("yt-dlp", raw, None), Error::SignInRequired(m) if m.contains("signed in")));
+        assert!(matches!(classify_error("yt-dlp", raw, Some("chrome session".into())), Error::SignInRequired(m) if m.contains("chrome session")));
+        let age = "ERROR: [youtube] abc: Sign in to confirm your age. This video may be inappropriate";
+        assert!(matches!(classify_error("yt-dlp", age, None), Error::SignInRequired(_)));
+    }
+
+    #[test]
+    fn other_errors_keep_only_error_lines() {
+        let err = classify_error("yt-dlp", "WARNING: x\nERROR: [generic] HTTP Error 404", None);
+        assert!(matches!(&err, Error::Tool { message, .. } if message == "[generic] HTTP Error 404"), "{err}");
+        let ended = classify_error("yt-dlp", "ERROR: [youtube] abc: This live event has ended.", None);
+        assert!(ended.to_string().contains("replay may still be processing"));
     }
 
     #[test]

@@ -76,6 +76,9 @@ enum Cmd {
         /// YouTube often requires it ("confirm you're not a bot").
         #[arg(long)]
         cookies_from_browser: Option<String>,
+        /// Netscape cookies.txt exported from a signed-in browser; overrides --cookies-from-browser.
+        #[arg(long)]
+        cookies: Option<PathBuf>,
         #[arg(long)]
         events: bool,
     },
@@ -259,9 +262,15 @@ fn run(cli: Cli) -> Result<ExitCode, String> {
         }
         Cmd::Render { spec, output, encoder, events } => jobs::render_cmd(&tools, &spec, &output, encoder.into(), events),
         Cmd::Proxy { input, output, events } => jobs::proxy_cmd(&tools, &input, &output, events),
-        Cmd::Download { urls, output_dir, preset, cookies_from_browser, events } => {
-            jobs::download_cmd(&tools, &urls, &output_dir, preset.into(), cookies_from_browser.as_deref(), events)
-        }
+        Cmd::Download { urls, output_dir, preset, cookies_from_browser, cookies, events } => jobs::download_cmd(
+            &tools,
+            &urls,
+            &output_dir,
+            preset.into(),
+            cookies_from_browser.as_deref(),
+            cookies.as_deref(),
+            events,
+        ),
         Cmd::Check(common) => process(&tools, &common, None),
         Cmd::Fix { common, output_dir, encoder } => {
             let caps = Capabilities::detect(&tools).map_err(|e| e.to_string())?;

@@ -8,6 +8,8 @@
 #include <QFileInfo>
 #include <QJsonDocument>
 #include <QSaveFile>
+#include <QProcess>
+#include <QSettings>
 #include <QStandardPaths>
 
 Util::Util(QObject *parent)
@@ -108,6 +110,83 @@ void Util::reveal(const QString &path) const
 {
     const QFileInfo info(path);
     QDesktopServices::openUrl(QUrl::fromLocalFile(info.isDir() ? path : info.absolutePath()));
+}
+
+namespace {
+
+struct Browser {
+    const char *id;
+    const char *label;
+    const char *macApp;     // bundle name in /Applications
+    const char *windowsExe; // registered under "App Paths"
+};
+
+// Order matters: most common first. Safari exists only on macOS.
+constexpr Browser kBrowsers[] = {
+    {"chrome", "Chrome", "Google Chrome", "chrome.exe"},
+    {"safari", "Safari", "Safari", nullptr},
+    {"edge", "Edge", "Microsoft Edge", "msedge.exe"},
+    {"firefox", "Firefox", "Firefox", "firefox.exe"},
+    {"brave", "Brave", "Brave Browser", "brave.exe"},
+};
+
+const Browser *findBrowser(const QString &id)
+{
+    for (const Browser &b : kBrowsers) {
+        if (id == QLatin1String(b.id))
+            return &b;
+    }
+    return nullptr;
+}
+
+bool isInstalled(const Browser &b)
+{
+#if defined(Q_OS_MACOS)
+    const QString app = QString::fromLatin1(b.macApp) + QStringLiteral(".app");
+    return QFileInfo::exists(QStringLiteral("/Applications/") + app)
+        || QFileInfo::exists(QDir::homePath() + QStringLiteral("/Applications/") + app)
+        || (QLatin1String(b.id) == QLatin1String("safari") && QFileInfo::exists(QStringLiteral("/System/Volumes/Preboot/Cryptexes/App/System/Applications/Safari.app")));
+#elif defined(Q_OS_WIN)
+    if (!b.windowsExe)
+        return false;
+    const QString key = QStringLiteral("\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\App Paths\\") + QString::fromLatin1(b.windowsExe);
+    for (const QString root : {QStringLiteral("HKEY_LOCAL_MACHINE"), QStringLiteral("HKEY_CURRENT_USER")}) {
+        if (!QSettings(root + key, QSettings::NativeFormat).value(QStringLiteral(".")).toString().isEmpty())
+            return true;
+    }
+    return false;
+#else
+    Q_UNUSED(b)
+    return false;
+#endif
+}
+
+} // namespace
+
+QVariantList Util::installedBrowsers() const
+{
+    QVariantList list;
+    for (const Browser &b : kBrowsers) {
+        if (isInstalled(b))
+            list.append(QVariantMap{{QStringLiteral("id"), QString::fromLatin1(b.id)}, {QStringLiteral("label"), QString::fromLatin1(b.label)}});
+    }
+    return list;
+}
+
+bool Util::openInBrowser(const QString &browser, const QUrl &url) const
+{
+    const Browser *b = findBrowser(browser);
+    bool started = false;
+#if defined(Q_OS_MACOS)
+    if (b)
+        started = QProcess::startDetached(QStringLiteral("/usr/bin/open"), {QStringLiteral("-a"), QString::fromLatin1(b->macApp), url.toString()});
+#elif defined(Q_OS_WIN)
+    // `start` resolves the browser through its App Paths registration; the empty "" is the window title.
+    if (b && b->windowsExe)
+        started = QProcess::startDetached(QStringLiteral("cmd.exe"), {QStringLiteral("/c"), QStringLiteral("start"), QStringLiteral("\"\""),
+                                                                      QString::fromLatin1(b->windowsExe), url.toString()});
+#endif
+    return started || QDesktopServices::openUrl(url);
 }
 
 QString Util::timestamp() const
