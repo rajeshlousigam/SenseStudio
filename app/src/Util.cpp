@@ -139,6 +139,24 @@ const Browser *findBrowser(const QString &id)
     return nullptr;
 }
 
+#if defined(Q_OS_WIN)
+// Full path of the browser exe from its "App Paths" registration (machine-wide or per-user install).
+QString windowsBrowserPath(const Browser &b)
+{
+    if (!b.windowsExe)
+        return {};
+    const QString key = QStringLiteral("\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\App Paths\\") + QString::fromLatin1(b.windowsExe);
+    for (const QString &root : {QStringLiteral("HKEY_CURRENT_USER"), QStringLiteral("HKEY_LOCAL_MACHINE")}) {
+        QString path = QSettings(root + key, QSettings::NativeFormat).value(QStringLiteral(".")).toString().trimmed();
+        if (path.size() > 1 && path.startsWith(QLatin1Char('"')) && path.endsWith(QLatin1Char('"')))
+            path = path.mid(1, path.size() - 2);
+        if (QFileInfo(path).isFile())
+            return path;
+    }
+    return {};
+}
+#endif
+
 bool isInstalled(const Browser &b)
 {
 #if defined(Q_OS_MACOS)
@@ -147,14 +165,7 @@ bool isInstalled(const Browser &b)
         || QFileInfo::exists(QDir::homePath() + QStringLiteral("/Applications/") + app)
         || (QLatin1String(b.id) == QLatin1String("safari") && QFileInfo::exists(QStringLiteral("/System/Volumes/Preboot/Cryptexes/App/System/Applications/Safari.app")));
 #elif defined(Q_OS_WIN)
-    if (!b.windowsExe)
-        return false;
-    const QString key = QStringLiteral("\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\App Paths\\") + QString::fromLatin1(b.windowsExe);
-    for (const QString root : {QStringLiteral("HKEY_LOCAL_MACHINE"), QStringLiteral("HKEY_CURRENT_USER")}) {
-        if (!QSettings(root + key, QSettings::NativeFormat).value(QStringLiteral(".")).toString().isEmpty())
-            return true;
-    }
-    return false;
+    return !windowsBrowserPath(b).isEmpty();
 #else
     Q_UNUSED(b)
     return false;
@@ -181,10 +192,13 @@ bool Util::openInBrowser(const QString &browser, const QUrl &url) const
     if (b)
         started = QProcess::startDetached(QStringLiteral("/usr/bin/open"), {QStringLiteral("-a"), QString::fromLatin1(b->macApp), url.toString()});
 #elif defined(Q_OS_WIN)
-    // `start` resolves the browser through its App Paths registration; the empty "" is the window title.
-    if (b && b->windowsExe)
-        started = QProcess::startDetached(QStringLiteral("cmd.exe"), {QStringLiteral("/c"), QStringLiteral("start"), QStringLiteral("\"\""),
-                                                                      QString::fromLatin1(b->windowsExe), url.toString()});
+    // Launch the exe directly with the URL as one argument. Going through `cmd /c start` broke
+    // sign-in links: cmd treats `&` as a command separator and `%xx` as variables.
+    if (b) {
+        const QString exe = windowsBrowserPath(*b);
+        if (!exe.isEmpty())
+            started = QProcess::startDetached(exe, {url.toString(QUrl::FullyEncoded)});
+    }
 #endif
     return started || QDesktopServices::openUrl(url);
 }
