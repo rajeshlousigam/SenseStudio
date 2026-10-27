@@ -87,7 +87,7 @@ pub fn download(req: &DownloadRequest<'_>, on_event: &mut dyn FnMut(DownloadEven
         }
     })
     .map_err(|e| match e {
-        Error::Tool { tool, message } => classify_error(tool, &message, signed_in_with(req)),
+        Error::Tool { tool, message } => classify_error(tool, &message, signed_in_with(req), req.cookies_from_browser),
         other => other,
     })?;
     if files.is_empty() {
@@ -105,8 +105,11 @@ fn signed_in_with(req: &DownloadRequest<'_>) -> Option<String> {
 
 /// Sign-in problems become `SignInRequired` so the app can offer to sign in;
 /// everything else stays a tool error with a readable message.
-fn classify_error(tool: &'static str, message: &str, signed_in: Option<String>) -> Error {
+fn classify_error(tool: &'static str, message: &str, signed_in: Option<String>, browser: Option<&str>) -> Error {
     let text = error_lines(message);
+    if let Some(reason) = unreadable_sign_in(&text, browser) {
+        return Error::SignInRequired(reason);
+    }
     let needs_sign_in = (text.contains("confirm you") && text.contains("not a bot"))
         || text.contains("confirm your age")
         || text.contains("Sign in if you've been granted access")
@@ -120,7 +123,46 @@ fn classify_error(tool: &'static str, message: &str, signed_in: Option<String>) 
             ),
         });
     }
-    Error::Tool { tool, message: friendly_error(&text, signed_in.is_some()) }
+    Error::Tool { tool, message: friendly_error(&text) }
+}
+
+/// The browser's sign-in exists but yt-dlp cannot read it. Treated as "sign in needed" so the
+/// app reopens the sign-in dialog with a way out instead of a dead-end error.
+fn unreadable_sign_in(text: &str, browser: Option<&str>) -> Option<String> {
+    let name = match browser {
+        Some("chrome") => "Chrome",
+        Some("edge") => "Edge",
+        Some("brave") => "Brave",
+        Some("firefox") => "Firefox",
+        Some("safari") => "Safari",
+        _ => "This browser",
+    };
+    // Chrome 127+ on Windows encrypts cookies so only Chrome can read them (App-Bound encryption),
+    // and a running Chrome locks its cookie file. Edge and Brave inherit both.
+    if text.contains("Failed to decrypt with DPAPI") || text.contains("App-Bound") || text.contains("app-bound") {
+        return Some(format!(
+            "{name} on Windows doesn't let other apps read its YouTube sign-in. Choose Firefox, or use a cookies file."
+        ));
+    }
+    if text.contains("Could not copy") && text.contains("cookie database") {
+        return Some(format!(
+            "{name} is open and locking its sign-in. Close {name} completely and retry, or choose Firefox or a cookies file."
+        ));
+    }
+    if text.contains("Failed to decrypt") {
+        return Some(format!("SenseStudio couldn't read {name}'s sign-in. Choose another browser or use a cookies file."));
+    }
+    if text.contains("Operation not permitted") && text.contains("Safari") {
+        return Some(
+            "macOS blocked access to Safari's sign-in. Allow SenseStudio in System Settings → Privacy & Security → \
+             Full Disk Access, or choose Chrome or Firefox."
+                .into(),
+        );
+    }
+    if text.contains("could not find") && text.contains("cookies database") {
+        return Some(format!("{name} has no profile on this computer. Choose the browser you use for YouTube."));
+    }
+    None
 }
 
 /// yt-dlp prints warnings, errors and long FAQ links; keep only the ERROR lines.
@@ -134,8 +176,7 @@ fn error_lines(message: &str) -> String {
 }
 
 /// Explains the non-sign-in failures people actually hit.
-fn friendly_error(text: &str, signed_in: bool) -> String {
-    let browser = signed_in.then_some("the browser");
+fn friendly_error(text: &str) -> String {
     if text.contains("live event has ended") || text.contains("No video formats found") || text.contains("Requested format is not available") {
         return "YouTube has no downloadable video for this link yet. If it was a live stream, the replay may still be \
                 processing or the channel didn't save it; try again later. If it plays on youtube.com but still fails \
@@ -147,21 +188,6 @@ fn friendly_error(text: &str, signed_in: bool) -> String {
     }
     if text.contains("does not pass filter") && text.contains("is_live") {
         return "This stream is live right now. Download it after it ends and the replay is available.".into();
-    }
-    if text.contains("Operation not permitted") && text.contains("Safari") {
-        return "macOS blocked access to Safari's cookies. Allow SenseStudio in System Settings → Privacy & Security → \
-                Full Disk Access, or choose Chrome or Firefox."
-            .into();
-    }
-    if text.contains("could not find") && text.contains("cookies database") {
-        return "No browser profile with cookies was found on this computer. Sign in with another browser.".into();
-    }
-    if text.contains("Failed to decrypt") || text.contains("Could not copy") && text.contains("cookie database") {
-        return format!(
-            "Couldn't read {}'s cookies (the browser may be open and locking them, or blocks access). \
-             Close it and Retry, or choose Firefox.",
-            browser.unwrap_or("the browser")
-        );
     }
     text.to_owned()
 }
@@ -186,17 +212,28 @@ mod tests {
     #[test]
     fn bot_checks_become_sign_in_required() {
         let raw = "WARNING: [youtube] No title found\nERROR: [youtube] abc: Sign in to confirm you’re not a bot. Use --cookies-from-browser";
-        assert!(matches!(classify_error("yt-dlp", raw, None), Error::SignInRequired(m) if m.contains("signed in")));
-        assert!(matches!(classify_error("yt-dlp", raw, Some("chrome session".into())), Error::SignInRequired(m) if m.contains("chrome session")));
+        assert!(matches!(classify_error("yt-dlp", raw, None, None), Error::SignInRequired(m) if m.contains("signed in")));
+        assert!(matches!(classify_error("yt-dlp", raw, Some("chrome session".into()), Some("chrome")), Error::SignInRequired(m) if m.contains("chrome session")));
         let age = "ERROR: [youtube] abc: Sign in to confirm your age. This video may be inappropriate";
-        assert!(matches!(classify_error("yt-dlp", age, None), Error::SignInRequired(_)));
+        assert!(matches!(classify_error("yt-dlp", age, None, None), Error::SignInRequired(_)));
+    }
+
+    #[test]
+    fn unreadable_windows_browser_sign_in_reopens_sign_in() {
+        // Messages as yt-dlp prints them on Windows (issues #10927 and #7271).
+        let dpapi = "ERROR: Failed to decrypt with DPAPI. See  https://github.com/yt-dlp/yt-dlp/issues/10927  for more info";
+        let err = classify_error("yt-dlp", dpapi, Some("chrome session".into()), Some("chrome"));
+        assert!(matches!(&err, Error::SignInRequired(m) if m.contains("Chrome on Windows") && m.contains("Firefox")), "{err}");
+        let locked = "ERROR: Could not copy Chrome cookie database. See  https://github.com/yt-dlp/yt-dlp/issues/7271  for more info";
+        let err = classify_error("yt-dlp", locked, Some("edge session".into()), Some("edge"));
+        assert!(matches!(&err, Error::SignInRequired(m) if m.contains("Close Edge completely")), "{err}");
     }
 
     #[test]
     fn other_errors_keep_only_error_lines() {
-        let err = classify_error("yt-dlp", "WARNING: x\nERROR: [generic] HTTP Error 404", None);
+        let err = classify_error("yt-dlp", "WARNING: x\nERROR: [generic] HTTP Error 404", None, None);
         assert!(matches!(&err, Error::Tool { message, .. } if message == "[generic] HTTP Error 404"), "{err}");
-        let ended = classify_error("yt-dlp", "ERROR: [youtube] abc: This live event has ended.", None);
+        let ended = classify_error("yt-dlp", "ERROR: [youtube] abc: This live event has ended.", None, None);
         assert!(ended.to_string().contains("replay may still be processing"));
     }
 

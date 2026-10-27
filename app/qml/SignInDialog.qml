@@ -18,7 +18,17 @@ Popup {
     signal applied(string browser, string cookiesFile)
     signal cleared()
 
-    readonly property var browsers: Util.installedBrowsers()
+    readonly property bool isWindows: Qt.platform.os === "windows"
+    // Chromium browsers on Windows encrypt their sign-in so only they can read it (App-Bound
+    // encryption) and lock it while open; Firefox has neither problem, so it goes first there.
+    readonly property var blockedOnWindows: ["chrome", "edge", "brave"]
+    readonly property var browsers: {
+        const list = Util.installedBrowsers()
+        if (isWindows)
+            list.sort((a, b) => (a.id === "firefox" ? 0 : 1) - (b.id === "firefox" ? 0 : 1))
+        return list
+    }
+    function hasBrowser(id) { return browsers.some(b => b.id === id) }
     readonly property string browserLabel: {
         for (const b of browsers) if (b.id === browser) return b.label
         return browser
@@ -31,7 +41,12 @@ Popup {
     width: 600
     modal: true
     padding: Theme.s6
-    onAboutToShow: browserLaunched = false
+    onAboutToShow: {
+        browserLaunched = false
+        // First sign-in on Windows: start from the browser that actually works there.
+        if (isWindows && browser === "" && cookiesFile === "" && hasBrowser("firefox"))
+            browser = "firefox"
+    }
     background: Rectangle { color: Theme.elevated; radius: Theme.radiusXl; border.color: Theme.border }
 
     component StepLabel: Text {
@@ -85,6 +100,8 @@ Popup {
                     contentItem: Text {
                         id: choiceLabel
                         text: choice.modelData.label
+                              + (dialog.isWindows && choice.modelData.id === "firefox" ? qsTr("  · recommended") : "")
+                              + (dialog.isWindows && dialog.blockedOnWindows.indexOf(choice.modelData.id) >= 0 ? qsTr("  · often blocked") : "")
                         color: Theme.textPrimary
                         font.pixelSize: Theme.fontBase
                         font.weight: Font.DemiBold
@@ -125,7 +142,9 @@ Popup {
             font.pixelSize: Theme.fontSm
             text: Qt.platform.os === "osx"
                 ? qsTr("On the first download macOS asks to let SenseStudio read the browser's cookies; choose Allow. Safari also needs Full Disk Access for SenseStudio (System Settings → Privacy & Security).")
-                : qsTr("Chrome and Edge on Windows often block other apps from reading their sign-in. If that happens, use Firefox or a cookies file.")
+                : dialog.hasBrowser("firefox")
+                    ? qsTr("On Windows, Chrome, Edge and Brave don't let other apps read their sign-in. Use Firefox, or a cookies file below.")
+                    : qsTr("On Windows, Chrome, Edge and Brave don't let other apps read their sign-in. Install Firefox, or use a cookies file below (works with any browser).")
         }
 
         StepLabel { text: qsTr("3. COME BACK AND RETRY"); Layout.topMargin: Theme.s2 }

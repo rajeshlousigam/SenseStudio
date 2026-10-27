@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.21)
 # Qt 6.8 and the bundled FFmpeg builds both require macOS 12+.
 set(CMAKE_OSX_DEPLOYMENT_TARGET "12.0" CACHE STRING "Minimum macOS version")
 project(SenseStudio VERSION 1.0.0 LANGUAGES CXX)
-set(SENSE_VERSION_LABEL "1.0.0-beta.2" CACHE STRING "Version shown in the app and release names")
+set(SENSE_VERSION_LABEL "1.0.0-beta.3" CACHE STRING "Version shown in the app and release names")
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)

@@ -493,7 +493,7 @@ dependencies = [
 
 [[package]]
 name = "sense-cli"
-version = "1.0.0-beta.2"
+version = "1.0.0-beta.3"
 dependencies = [
  "clap",
  "sense-core",
@@ -504,7 +504,7 @@ dependencies = [
 
 [[package]]
 name = "sense-core"
-version = "1.0.0-beta.2"
+version = "1.0.0-beta.3"
 dependencies = [
  "serde",
  "serde_json",
